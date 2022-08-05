@@ -1,0 +1,11 @@
+/venv/
+/.idea/inspectionProfiles/
+/.idea/.gitignore
+/.idea/Desktop_APP_Source.iml
+/.idea/misc.xml
+/.idea/modules.xml
+/.idea/vcs.xml
+/.idea/
+/__pycache__/
+*.pyc 
+a.txt
