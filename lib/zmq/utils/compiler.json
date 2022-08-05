@@ -6,11 +6,11 @@
     "advapi32"
   ],
   "include_dirs": [
-    "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pip-req-build-48hwcd1e\\libzmq-dll",
+    "D:\\a\\pyzmq\\pyzmq\\libzmq-dll",
     "zmq\\utils"
   ],
   "library_dirs": [
-    "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\pip-req-build-48hwcd1e\\libzmq-dll"
+    "D:\\a\\pyzmq\\pyzmq\\libzmq-dll"
   ],
   "runtime_library_dirs": [],
   "extra_link_args": [],

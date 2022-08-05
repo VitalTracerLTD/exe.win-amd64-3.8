@@ -149,7 +149,7 @@ import re
 
 from _pydev_bundle import pydev_log
 from _pydevd_bundle import pydevd_dont_trace
-from _pydevd_bundle.pydevd_constants import (dict_iter_values, IS_PY3K, RETURN_VALUES_DICT, NO_FTRACE,
+from _pydevd_bundle.pydevd_constants import (RETURN_VALUES_DICT, NO_FTRACE,
     EXCEPTION_TYPE_HANDLED, EXCEPTION_TYPE_USER_UNHANDLED)
 from _pydevd_bundle.pydevd_frame_utils import add_exception_to_frame, just_raised, remove_exception_from_frame, ignore_exception_trace
 from _pydevd_bundle.pydevd_utils import get_clsname_for_code
@@ -509,8 +509,7 @@ cdef class PyDBFrame:
                         try:
                             linecache.checkcache(absolute_filename)
                         except:
-                            # Jython 2.1
-                            linecache.checkcache()
+                            pydev_log.exception('Error in linecache.checkcache(%r)', absolute_filename)
 
                     from_user_input = main_debugger.filename_to_lines_where_exceptions_are_ignored.get(canonical_normalized_filename)
                     if from_user_input:
@@ -531,8 +530,8 @@ cdef class PyDBFrame:
                         try:
                             line = linecache.getline(absolute_filename, exc_lineno, check_trace_obj.tb_frame.f_globals)
                         except:
-                            # Jython 2.1
-                            line = linecache.getline(absolute_filename, exc_lineno)
+                            pydev_log.exception('Error in linecache.getline(%r, %s, f_globals)', absolute_filename, exc_lineno)
+                            line = ''
 
                         if IGNORE_EXCEPTION_TAG.match(line) is not None:
                             lines_ignored[exc_lineno] = 1
@@ -677,7 +676,7 @@ cdef class PyDBFrame:
         cdef str curr_func_name;
         cdef bint exist_result;
         cdef dict frame_skips_cache;
-        cdef tuple frame_cache_key;
+        cdef object frame_cache_key;
         cdef tuple line_cache_key;
         cdef int breakpoints_in_line_cache;
         cdef int breakpoints_in_frame_cache;
@@ -704,7 +703,11 @@ cdef class PyDBFrame:
         # if DEBUG: print('frame trace_dispatch %s %s %s %s %s %s, stop: %s' % (frame.f_lineno, frame.f_code.co_name, frame.f_code.co_filename, event, constant_to_str(info.pydev_step_cmd), arg, info.pydev_step_stop))
         try:
             info.is_tracing += 1
-            line = frame.f_lineno
+
+            # TODO: This shouldn't be needed. The fact that frame.f_lineno
+            # is None seems like a bug in Python 3.11.
+            # Reported in: https://github.com/python/cpython/issues/94485
+            line = frame.f_lineno or 0  # Workaround or case where frame.f_lineno is None
             line_cache_key = (frame_cache_key, line)
 
             if main_debugger.pydb_disposed:
@@ -955,7 +958,7 @@ cdef class PyDBFrame:
                             if curr_func_name in ('?', '<module>', '<lambda>'):
                                 curr_func_name = ''
 
-                            for bp in dict_iter_values(breakpoints_for_file):  # jython does not support itervalues()
+                            for bp in breakpoints_for_file.values():
                                 # will match either global or some function
                                 if bp.func_name in ('None', curr_func_name):
                                     has_breakpoint_in_frame = True
@@ -1014,16 +1017,16 @@ cdef class PyDBFrame:
                 if breakpoint:
                     # ok, hit breakpoint, now, we have to discover if it is a conditional breakpoint
                     # lets do the conditional stuff here
+                    if breakpoint.expression is not None:
+                        main_debugger.handle_breakpoint_expression(breakpoint, info, new_frame)
+                        if breakpoint.is_logpoint and info.pydev_message is not None and len(info.pydev_message) > 0:
+                            cmd = main_debugger.cmd_factory.make_io_message(info.pydev_message + os.linesep, '1')
+                            main_debugger.writer.add_command(cmd)
+
                     if stop or exist_result:
                         eval_result = False
                         if breakpoint.has_condition:
                             eval_result = main_debugger.handle_breakpoint_condition(info, breakpoint, new_frame)
-
-                        if breakpoint.expression is not None:
-                            main_debugger.handle_breakpoint_expression(breakpoint, info, new_frame)
-                            if breakpoint.is_logpoint and info.pydev_message is not None and len(info.pydev_message) > 0:
-                                cmd = main_debugger.cmd_factory.make_io_message(info.pydev_message + os.linesep, '1')
-                                main_debugger.writer.add_command(cmd)
 
                         if breakpoint.has_condition:
                             if not eval_result:
@@ -1031,14 +1034,17 @@ cdef class PyDBFrame:
                         elif breakpoint.is_logpoint:
                             stop = False
 
-                    if is_call and frame.f_code.co_name in ('<module>', '<lambda>'):
+                    if is_call and (frame.f_code.co_name in ('<lambda>', '<module>') or (line == 1 and frame.f_code.co_name.startswith('<cell'))):
                         # If we find a call for a module, it means that the module is being imported/executed for the
                         # first time. In this case we have to ignore this hit as it may later duplicated by a
                         # line event at the same place (so, if there's a module with a print() in the first line
                         # the user will hit that line twice, which is not what we want).
                         #
-                        # As for lambda, as it only has a single statement, it's not interesting to trace
+                        # For lambda, as it only has a single statement, it's not interesting to trace
                         # its call and later its line event as they're usually in the same line.
+                        #
+                        # For ipython, <cell xxx> may be executed having each line compiled as a new
+                        # module, so it's the same case as <module>.
 
                         return self.trace_dispatch
 
@@ -1236,7 +1242,7 @@ cdef class PyDBFrame:
                 else:
                     stop = False
 
-                if stop and step_cmd != -1 and is_return and IS_PY3K and hasattr(frame, "f_back"):
+                if stop and step_cmd != -1 and is_return and hasattr(frame, "f_back"):
                     f_code = getattr(frame.f_back, 'f_code', None)
                     if f_code is not None:
                         if main_debugger.get_file_type(frame.f_back) == main_debugger.PYDEV_FILE:
@@ -1306,7 +1312,7 @@ cdef class PyDBFrame:
         # end trace_dispatch
 from _pydev_bundle.pydev_is_thread_alive import is_thread_alive
 from _pydev_bundle.pydev_log import exception as pydev_log_exception
-from _pydev_imps._pydev_saved_modules import threading
+from _pydev_bundle._pydev_saved_modules import threading
 from _pydevd_bundle.pydevd_constants import (get_current_thread_id, NO_FTRACE,
     USE_CUSTOM_SYS_CURRENT_FRAMES_MAP, ForkSafeLock)
 from pydevd_file_utils import get_abs_path_real_path_and_base_from_frame, NORM_PATHS_AND_BASE_CONTAINER
@@ -1640,7 +1646,7 @@ cdef class ThreadTracer:
         cdef str filename;
         cdef str base;
         cdef int pydev_step_cmd;
-        cdef tuple frame_cache_key;
+        cdef object frame_cache_key;
         cdef dict cache_skips;
         cdef bint is_stepping;
         cdef tuple abs_path_canonical_path_and_base;
@@ -1667,7 +1673,7 @@ cdef class ThreadTracer:
 
             # Note: it's important that the context name is also given because we may hit something once
             # in the global context and another in the local context.
-            frame_cache_key = (frame.f_code.co_firstlineno, frame.f_code.co_name, frame.f_code.co_filename)
+            frame_cache_key = frame.f_code
             if frame_cache_key in cache_skips:
                 if not is_stepping:
                     # if DEBUG: print('skipped: trace_dispatch (cache hit)', frame_cache_key, frame.f_lineno, event, frame.f_code.co_name)
@@ -1681,7 +1687,7 @@ cdef class ThreadTracer:
 
                         back_frame = frame.f_back
                         if back_frame is not None and pydev_step_cmd in (107, 144, 109, 160):
-                            back_frame_cache_key = (back_frame.f_code.co_firstlineno, back_frame.f_code.co_name, back_frame.f_code.co_filename)
+                            back_frame_cache_key = back_frame.f_code
                             if cache_skips.get(back_frame_cache_key) == 1:
                                 # if DEBUG: print('skipped: trace_dispatch (cache hit: 1)', frame_cache_key, frame.f_lineno, event, frame.f_code.co_name)
                                 return None if event == 'call' else NO_FTRACE
@@ -1721,7 +1727,7 @@ cdef class ThreadTracer:
                     back_frame = frame.f_back
                     if back_frame is not None and pydev_step_cmd in (107, 144, 109, 160):
                         if py_db.apply_files_filter(back_frame, back_frame.f_code.co_filename, False):
-                            back_frame_cache_key = (back_frame.f_code.co_firstlineno, back_frame.f_code.co_name, back_frame.f_code.co_filename)
+                            back_frame_cache_key = back_frame.f_code
                             cache_skips[back_frame_cache_key] = 1
                             # if DEBUG: print('skipped: trace_dispatch (filtered out: 1)', frame_cache_key, frame.f_lineno, event, frame.f_code.co_name)
                             return None if event == 'call' else NO_FTRACE
